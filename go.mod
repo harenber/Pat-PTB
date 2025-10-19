@@ -1,4 +1,4 @@
-module Pat-PTB
+module github.com/harenber/Pat-PTB
 
 go 1.24
 

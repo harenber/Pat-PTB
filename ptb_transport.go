@@ -187,6 +187,11 @@ func (m *Modem) processResponse(resp string) {
 		m.remotecall = ""
 		m.notifyListeners(Event{Type: EventDisconnected})
 
+	case strings.Contains(resp, "CHANNEL NOT CONNECTED"):
+		m.state = StateDisconnected
+		m.remotecall = ""
+		m.notifyListeners(Event{Type: EventDisconnected})
+
 	case strings.Contains(resp, "BUSY"):
 		m.state = StateBusy
 		m.notifyListeners(Event{Type: EventBusy})

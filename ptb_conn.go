@@ -37,11 +37,9 @@ func (c *Conn) Close() error {
 	if c.closed {
 		return nil
 	}
-
+	c.modem.Disconnect()
 	c.closed = true
-
-	// Send disconnect command
-	return c.modem.sendCommand("D")
+	return nil
 }
 
 // LocalAddr returns the local address

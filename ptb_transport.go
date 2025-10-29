@@ -248,6 +248,7 @@ func (m *Modem) Dial(targetcall string) (*Conn, error) {
 			return nil, errors.New("connection failed")
 		}
 	case <-ctx.Done():
+		m.sendCommand("DD")
 		m.state = StateDisconnected
 		return nil, errors.New("connection timeout")
 	}
@@ -269,6 +270,16 @@ func (m *Modem) Busy() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.state == StateBusy
+}
+
+func (m *Modem) Disconnect() {
+	m.sendCommand("D")
+	for {
+		if m.state == StateDisconnected {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // AddListener registers an event listener
@@ -314,10 +325,18 @@ func (m *Modem) Close() error {
 
 	if m.cmdConn != nil {
 		// Send disconnect if connected
-		if m.state == StateConnected {
-			fmt.Fprintf(m.cmdConn, "D\r")
+		if m.state != StateDisconnected {
+			fmt.Fprintf(m.cmdConn, "DD\r")
 			time.Sleep(100 * time.Millisecond)
 		}
+		// Wait until state is Ready or Closed before proceeding
+		for {
+			if m.state == StateDisconnected {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
 		if err := m.cmdConn.Close(); err != nil {
 			errs = append(errs, err)
 		}

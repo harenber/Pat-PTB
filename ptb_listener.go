@@ -31,6 +31,15 @@ func (m *Modem) NewListener() (*Listener, error) {
 				remotecall: e.Data,
 				localcall:  m.mycall,
 			}
+
+			// Store as active connection in modem
+			m.mu.Lock()
+			m.activeConn = conn
+			m.mu.Unlock()
+
+			// Setup disconnect listener for this connection
+			conn.setupDisconnectListener()
+
 			select {
 			case l.connCh <- conn:
 			case <-l.closeCh:

@@ -38,9 +38,14 @@ type Modem struct {
 
 	state      ModemState
 	remotecall string
-	bandwidth  int
+	//bandwidth  int
 
-	debug bool
+	debug      bool
+	activeConn *Conn
+
+	// Deadline management
+	deadlineMu     sync.Mutex
+	deadlineCancel chan struct{}
 }
 
 // ModemState represents the current state of the modem
@@ -86,12 +91,13 @@ func OpenTCP(addr, dataAddr, mycall string) (*Modem, error) {
 	}
 
 	m := &Modem{
-		addr:      addr,
-		dataAddr:  dataAddr,
-		mycall:    mycall,
-		listeners: make([]func(Event), 0),
-		state:     StateDisconnected,
-		debug:     true,
+		addr:           addr,
+		dataAddr:       dataAddr,
+		mycall:         mycall,
+		listeners:      make([]func(Event), 0),
+		state:          StateDisconnected,
+		debug:          true,
+		deadlineCancel: make(chan struct{}),
 	}
 
 	// Connect to command socket
@@ -143,7 +149,11 @@ func (m *Modem) sendCommand(cmd string) error {
 	}
 
 	_, err := fmt.Fprintf(m.cmdConn, "%s\r", cmd)
-	return err
+	if err != nil {
+		log.Printf("failed to send command to PTB command socket: %s", err)
+		return err
+	}
+	return nil
 }
 
 // handleEvents processes incoming events from PTB
@@ -253,16 +263,24 @@ func (m *Modem) Dial(targetcall string) (*Conn, error) {
 		return nil, errors.New("connection timeout")
 	}
 
-	return &Conn{
+	conn := &Conn{
 		modem:      m,
 		remotecall: targetcall,
 		localcall:  m.mycall,
-	}, nil
+	}
+	m.mu.Lock()
+	m.activeConn = conn
+	m.mu.Unlock()
+
+	// Setup listener to handle remote disconnects
+	conn.setupDisconnectListener()
+
+	return conn, nil
 }
 
 // Listen puts the modem in listen mode
 func (m *Modem) Listen() error {
-	return m.sendCommand("%L1")
+	return m.sendCommand("%L 1")
 }
 
 // Busy returns whether the channel is busy
@@ -273,6 +291,12 @@ func (m *Modem) Busy() bool {
 }
 
 func (m *Modem) Disconnect() {
+	if m.debug {
+		log.Printf("PTB Disconnect requested.")
+	}
+	// we have to ensure that all data is in the modem before calling "D" to avoid a race condition
+	time.Sleep(4 * time.Second)
+	//m.sendCommand("%C")         //clear the buffer to avoid modem lockup
 	m.sendCommand("D")
 	for {
 		if m.state == StateDisconnected {
@@ -326,7 +350,7 @@ func (m *Modem) Close() error {
 	if m.cmdConn != nil {
 		// Send disconnect if connected
 		if m.state != StateDisconnected {
-			fmt.Fprintf(m.cmdConn, "DD\r")
+			m.sendCommand("DD")
 			time.Sleep(100 * time.Millisecond)
 		}
 		// Wait until state is Ready or Closed before proceeding
@@ -371,6 +395,49 @@ func (m *Modem) Ping() error {
 	// Send status request
 	_, err := fmt.Fprintf(m.cmdConn, "@B\r")
 	return err
+}
+
+// interruptRead temporarily sets a deadline to interrupt blocked reads, then resets it
+func (m *Modem) interruptRead() {
+	m.deadlineMu.Lock()
+	defer m.deadlineMu.Unlock()
+
+	// Cancel any pending deadline reset
+	select {
+	case m.deadlineCancel <- struct{}{}:
+	default:
+	}
+
+	// Set deadline to interrupt current read
+	m.dataConn.SetReadDeadline(time.Now())
+
+	// Schedule deadline reset
+	go func() {
+		select {
+		case <-time.After(10 * time.Millisecond):
+			m.deadlineMu.Lock()
+			m.dataConn.SetReadDeadline(time.Time{})
+			m.deadlineMu.Unlock()
+		case <-m.deadlineCancel:
+			// Cancelled, don't reset deadline
+			return
+		}
+	}()
+}
+
+// clearReadDeadline ensures the read deadline is cleared for new connections
+func (m *Modem) clearReadDeadline() {
+	m.deadlineMu.Lock()
+	defer m.deadlineMu.Unlock()
+
+	// Cancel any pending deadline reset
+	select {
+	case m.deadlineCancel <- struct{}{}:
+	default:
+	}
+
+	// Clear the deadline
+	m.dataConn.SetReadDeadline(time.Time{})
 }
 
 // Implement transport.Dialer interface

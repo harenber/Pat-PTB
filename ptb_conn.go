@@ -2,6 +2,7 @@ package ptb
 
 import (
 	"io"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -44,7 +45,10 @@ func (c *Conn) Read(p []byte) (n int, err error) {
 // Write writes data to the data socket
 func (c *Conn) Write(p []byte) (n int, err error) {
 	if c.closed {
-		c.Close()
+		err := c.Close()
+		if err != nil {
+			log.Printf("ptb: failed to close conn: %v", err)
+		}
 		return 0, io.ErrClosedPipe
 	}
 

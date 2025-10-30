@@ -1,4 +1,4 @@
-// Package ptb provides a transport for Pat using the PACTOR-TCP-Bridge (PTB)
+// Package ptb provides transport for Pat using the PACTOR-TCP-Bridge (PTB)
 // PTB connects to SCS PACTOR modems via WA8DED Hostmode over TCP
 package ptb
 
@@ -38,7 +38,6 @@ type Modem struct {
 
 	state      ModemState
 	remotecall string
-	//bandwidth  int
 
 	debug      bool
 	activeConn *Conn
@@ -86,7 +85,10 @@ func OpenTCP(addr, dataAddr, mycall string) (*Modem, error) {
 			return nil, fmt.Errorf("invalid address format: %w", err)
 		}
 		var cmdPort int
-		fmt.Sscanf(port, "%d", &cmdPort)
+		_, err = fmt.Sscanf(port, "%d", &cmdPort)
+		if err != nil {
+			return nil, fmt.Errorf("invalid port format: %w", err)
+		}
 		dataAddr = fmt.Sprintf("%s:%d", host, cmdPort+1)
 	}
 
@@ -111,14 +113,20 @@ func OpenTCP(addr, dataAddr, mycall string) (*Modem, error) {
 	// Connect to data socket
 	dataConn, err := net.DialTimeout("tcp", dataAddr, 10*time.Second)
 	if err != nil {
-		conn.Close()
+		e := conn.Close()
+		if e != nil {
+			log.Printf("ptb: error closing data connection: %v", e)
+		}
 		return nil, fmt.Errorf("failed to connect to PTB data socket: %w", err)
 	}
 	m.dataConn = dataConn
 
 	// Initialize modem
 	if err := m.initialize(); err != nil {
-		m.Close()
+		e := m.Close()
+		if e != nil {
+			log.Printf("ptb: error closing modem: %s", e)
+		}
 		return nil, fmt.Errorf("failed to initialize PTB: %w", err)
 	}
 
@@ -150,7 +158,7 @@ func (m *Modem) sendCommand(cmd string) error {
 
 	_, err := fmt.Fprintf(m.cmdConn, "%s\r", cmd)
 	if err != nil {
-		log.Printf("failed to send command to PTB command socket: %s", err)
+		log.Printf("ptb: failed to send command to PTB command socket: %s", err)
 		return err
 	}
 	return nil
@@ -258,7 +266,10 @@ func (m *Modem) Dial(targetcall string) (*Conn, error) {
 			return nil, errors.New("connection failed")
 		}
 	case <-ctx.Done():
-		m.sendCommand("DD")
+		err := m.sendCommand("DD")
+		if err != nil {
+			log.Printf("ptb: error sending DD command: %s", err)
+		}
 		m.state = StateDisconnected
 		return nil, errors.New("connection timeout")
 	}
@@ -297,7 +308,10 @@ func (m *Modem) Disconnect() {
 	// we have to ensure that all data is in the modem before calling "D" to avoid a race condition
 	time.Sleep(4 * time.Second)
 	//m.sendCommand("%C")         //clear the buffer to avoid modem lockup
-	m.sendCommand("D")
+	err := m.sendCommand("D")
+	if err != nil {
+		log.Printf("ptb: error sending D command: %s", err)
+	}
 	for {
 		if m.state == StateDisconnected {
 			break
@@ -350,7 +364,10 @@ func (m *Modem) Close() error {
 	if m.cmdConn != nil {
 		// Send disconnect if connected
 		if m.state != StateDisconnected {
-			m.sendCommand("DD")
+			err := m.sendCommand("DD")
+			if err != nil {
+				log.Printf("ptb: error sending DD command: %s", err)
+			}
 			time.Sleep(100 * time.Millisecond)
 		}
 		// Wait until state is Ready or Closed before proceeding
@@ -389,11 +406,19 @@ func (m *Modem) Ping() error {
 	}
 
 	// Set a short deadline for the ping
-	m.cmdConn.SetDeadline(time.Now().Add(2 * time.Second))
-	defer m.cmdConn.SetDeadline(time.Time{})
+	err := m.cmdConn.SetDeadline(time.Now().Add(2 * time.Second))
+	if err != nil {
+		log.Printf("ptb: error setting deadline: %s", err)
+	}
+	defer func() {
+		err := m.cmdConn.SetDeadline(time.Time{})
+		if err != nil {
+			log.Printf("ptb: error setting deadline: %s", err)
+		}
+	}()
 
 	// Send status request
-	_, err := fmt.Fprintf(m.cmdConn, "@B\r")
+	_, err = fmt.Fprintf(m.cmdConn, "@B\r")
 	return err
 }
 
@@ -409,14 +434,20 @@ func (m *Modem) interruptRead() {
 	}
 
 	// Set deadline to interrupt current read
-	m.dataConn.SetReadDeadline(time.Now())
+	err := m.dataConn.SetReadDeadline(time.Now())
+	if err != nil {
+		log.Printf("ptb: error setting read deadline: %s", err)
+	}
 
 	// Schedule deadline reset
 	go func() {
 		select {
 		case <-time.After(10 * time.Millisecond):
 			m.deadlineMu.Lock()
-			m.dataConn.SetReadDeadline(time.Time{})
+			err := m.dataConn.SetReadDeadline(time.Time{})
+			if err != nil {
+				log.Printf("ptb: error setting read deadline: %s", err)
+			}
 			m.deadlineMu.Unlock()
 		case <-m.deadlineCancel:
 			// Cancelled, don't reset deadline
@@ -437,7 +468,10 @@ func (m *Modem) clearReadDeadline() {
 	}
 
 	// Clear the deadline
-	m.dataConn.SetReadDeadline(time.Time{})
+	err := m.dataConn.SetReadDeadline(time.Time{})
+	if err != nil {
+		log.Printf("ptb: error setting read deadline: %s", err)
+	}
 }
 
 // Implement transport.Dialer interface

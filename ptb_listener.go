@@ -2,6 +2,7 @@ package ptb
 
 import (
 	"errors"
+	"log"
 	"net"
 	"sync"
 )
@@ -44,7 +45,10 @@ func (m *Modem) NewListener() (*Listener, error) {
 			case l.connCh <- conn:
 			case <-l.closeCh:
 				// Listener closed, reject connection
-				conn.Close()
+				err := conn.Close()
+				if err != nil {
+					log.Printf("ptb: failed to close listener: %v", err)
+				}
 			}
 		}
 	}
